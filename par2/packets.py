@@ -177,7 +177,8 @@ class MainPacket(Packet):
 
     def is_valid(self) -> bool:
         """ A more strict validity check """
-        return super().is_valid() and self.header.type == self._expected_type
+        basic_checks = super().is_valid() and self.header.type == self._expected_type
+        return basic_checks and self.file_count == len(self.file_ids) + len(self.non_recovery_set_file_ids)
 
     @property
     def _raw_struct(self) -> tuple:
@@ -275,6 +276,32 @@ class FileDescriptionPacket(Packet):
     def is_valid(self) -> bool:
         """ A more strict validity check """
         return super().is_valid() and self.header.type == self._expected_type
+
+    @property
+    def _raw_struct(self) -> tuple:
+        """ The raw data unpacked, excluding file name """
+        return struct.unpack_from(self._format, self._data_after_header)
+
+    @property
+    def id(self) -> bytes:
+        """ File ID is currently defined as hash of everything else in this packet """
+        return self._raw_struct[0]
+
+    @property
+    def hash16k(self) -> bytes:
+        """MD5 of first 16k of file (useful for identification if file name corrupted) """
+        return self._raw_struct[1]
+
+    @property
+    def hash(self) -> bytes:
+        """ MD5 of the entire file """
+        return self._raw_struct[2]
+
+    @property
+    def name(self) -> str:
+        """ File's name """
+        offset = struct.calcsize(self._format)
+        return bytes(self._data_after_header[offset:]).rstrip(b'\0').decode()
 
 
 def packet_factory(data: Union[bytes, memoryview]):
