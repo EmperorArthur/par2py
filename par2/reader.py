@@ -3,6 +3,7 @@ __copyright__ = "Copyright (C) 2021 Arthur Moore"
 __license__ = "MIT"
 
 import mmap
+import re
 from collections.abc import Sequence
 from functools import partial
 from io import UnsupportedOperation
@@ -67,22 +68,18 @@ class Par2FileReader(Sequence):
         Scrub through the entire file, and find the offset for all the headers by looking for the magic value.
         """
         self._packet_offsets = list()
-        offset = self._offset
         if self._read_buffer is not None:
             if isinstance(self._read_buffer, mmap.mmap) and self._read_buffer.closed:
                 # Handle this being closed for some reason (error or otherwise)
                 self._read_buffer = None
                 self._get_packet_header_offsets()
                 return
-            while True:
-                packet_start = self._read_buffer[offset:].find(PacketHeader._magic_expected)
-                if packet_start < 0:
-                    break
-                offset += packet_start
-                self._packet_offsets.append(offset)
-                offset += PACKET_HEADER_SIZE  # Advance to after the found result
+            packet_search = re.compile(PacketHeader._magic_expected)
+            for match in packet_search.finditer(self._read_buffer):
+                self._packet_offsets.append(match.start())
             return
         if self._readable_and_seekable:
+            offset = self._offset
             # Sized so the header can't be missed, but duplicates can't occur
             buffer_size = int(2 * len(PacketHeader._magic_expected) - 1)  # Should always be odd
             read_size = ceil(buffer_size/2)  # Size of file reads (just over half buffer size)
