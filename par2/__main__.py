@@ -16,7 +16,7 @@ def ls():
             print(f"  Unable to parse file: {e}")
             continue
         for recovery_set in par2_parser.recovery_sets.values():
-            for packet in recovery_set.get_packets("FileDescription"):
+            for packet in recovery_set.file_description_packets:
                 print(f"  {packet.name}")
 
 

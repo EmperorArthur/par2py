@@ -9,26 +9,6 @@ from typing import NamedTuple, SupportsBytes, Union, Tuple
 
 MD5_FORMAT = "16s"
 
-# These are the magic values Par2 uses to identify packets
-PACKET_TYPES = {
-    # Only one of these
-    # size: header + 8 + 4 + (16 * <number_of_FileDescription/FileVerification_packets>)
-    "Main": b'PAR 2.0\x00Main\x00\x00\x00\x00',
-    # Only one of these
-    # size: header + 4 + variable (Fixed per compiled program)
-    "Creator": b'PAR 2.0\x00Creator\x00',
-    # Number of files used to create the ".par2" file.
-    # size: variable
-    "FileDescription": b'PAR 2.0\x00FileDesc',
-    # Same number as "FileDescription"
-    # size: variable
-    "FileVerification": b'PAR 2.0\x00IFSC\x00\x00\x00\x00',
-    # size: header + 4 + Main.blocksize (Fixed at file creation)
-    "RecoveryBlock": b'PAR 2.0\x00RecvSlic',
-}
-
-# Use for identifying packets
-PACKET_LOOKUP = {value: key for key, value in PACKET_TYPES.items()}
 
 # This is used so often, it's worth just defining it
 PACKET_HEADER_SIZE = 64
@@ -64,16 +44,10 @@ class PacketHeader(NamedTuple):
 
     def is_valid(self) -> bool:
         """ If the header matches what it is supposed to (does not check hash) """
-        return self.magic == self._magic_expected and \
-               self.signature in PACKET_LOOKUP
+        return self.magic == self._magic_expected
 
     def __bytes__(self) -> bytes:
         return struct.pack(self._format, *self)
-
-    @property
-    def type(self) -> str:
-        """ A human readable type of the packet the header is for """
-        return PACKET_LOOKUP.get(self.signature, "Unknown")
 
 
 class Packet(Sized, Hashable):  # SupportsBytes
@@ -82,21 +56,34 @@ class Packet(Sized, Hashable):  # SupportsBytes
     WARNING: Watch out for memory limitations with large data / many packets
     """
 
-    def __init__(self, packet_type: str = "Unknown", set_id: bytes = b'', data: bytes = b''):
+    @classmethod
+    def expected_signature(cls) -> bytes:
+        """
+        The signature for a type of packet.
+        Children should override this function.
+        cls.from_bytes(...) will fail if this is not empty, and does not match.
+        """
+        return b''
+
+    def __init__(self, signature: bytes = b'', set_id: bytes = b'', data: bytes = b''):
         """
         Create a new packet
         """
         header = PacketHeader(magic=PacketHeader._magic_expected,
                               length=PACKET_HEADER_SIZE + len(data), hash=b'', set_id=set_id,
-                              signature=PACKET_TYPES.get(packet_type, b''))
+                              signature=signature)
         self._header: PacketHeader = header  # Make sure someone knows what they're doing when writing to this
         self._data_after_header: bytes = data
-        if packet_type != "Unknown":
+        if signature != b'':
             # Don't bother doing a hash when the data is likely to be overwritten immediately
             self._header = self._header._replace(hash=self._generate_hash())
 
     def __repr__(self):
-        return "<Par2 Packet: {} ({} bytes)>".format(self.header.type, self.__len__())
+        sig = self.header.signature
+        if sig.startswith(b'PAR 2.0'):
+            sig = sig[7:]
+        sig=sig.strip(b'\0')
+        return "<Par2 Packet: {} ({} bytes)>".format(sig, self.__len__())
 
     @classmethod
     def from_bytes(cls, data: Union[bytes, memoryview]) -> "Packet":
@@ -111,6 +98,9 @@ class Packet(Sized, Hashable):  # SupportsBytes
         packet = cls()
         packet._header = PacketHeader.from_bytes(data)
         packet._data_after_header = data[PACKET_HEADER_SIZE:packet.header.length]
+        if cls.expected_signature() and packet.header.signature != cls.expected_signature():
+            raise ValueError("Packet signature '{}' does not match expected '{}'"
+                             .format(packet.header.signature, cls.expected_signature()))
         if not packet.is_valid():
             raise ValueError("Not a valid par2 packet")
         return packet
@@ -136,9 +126,10 @@ class Packet(Sized, Hashable):  # SupportsBytes
 
         Does not perform extensive internal checks, just basic matching to header
         """
+        signature_matches = not self.expected_signature() or self.header.signature == self.expected_signature()
         return self.header.is_valid() and \
                (len(self._data_after_header) + PACKET_HEADER_SIZE) == self.header.length and \
-               (self._generate_hash() == self.header.hash)
+               (self._generate_hash() == self.header.hash) and signature_matches
 
     def __len__(self):
         """ The size of the entire packet (including header) """
@@ -159,26 +150,29 @@ class Packet(Sized, Hashable):  # SupportsBytes
 
 
 class MainPacket(Packet):
+    # Only one of these per recovery set
+    # size: header + 8 + 4 + (16 * <number_of_FileDescription/FileVerification_packets>)
     _single_format = "<" + "QL"  # + Variable length data
-    _expected_type = "Main"
 
     @classmethod
-    def from_bytes(cls, data: Union[bytes, memoryview]) -> _expected_type:
+    def expected_signature(cls) -> bytes:
+        return b'PAR 2.0\x00Main\x00\x00\x00\x00'
+
+    @classmethod
+    def from_bytes(cls, data: Union[bytes, memoryview]) -> "MainPacket":
         # Use parent for parsing
         parent = super().from_bytes(data)
-        if parent.header.type != "Main":
-            raise ValueError("Packet is actually a {} Packet, not a {} Packet"
-                             .format(parent.header.type, cls._expected_type))
         # Convert to the real class by copying
         packet = cls()
         packet._header = parent._header
         packet._data_after_header = parent._data_after_header
+        if not packet.is_valid():
+            raise ValueError("Not a valid par2 packet")
         return packet
 
     def is_valid(self) -> bool:
         """ A more strict validity check """
-        basic_checks = super().is_valid() and self.header.type == self._expected_type
-        return basic_checks and self.file_count == len(self.file_ids) + len(self.non_recovery_set_file_ids)
+        return super().is_valid() and self.file_count == len(self.file_ids) + len(self.non_recovery_set_file_ids)
 
     @property
     def _raw_struct(self) -> tuple:
@@ -217,7 +211,12 @@ class MainPacket(Packet):
 
 
 class CreatorPacket(Packet):
-    _expected_type = "Creator"
+    # Only one of these per recovery set
+    # size: header + 4 + variable (Fixed per compiled program)
+
+    @classmethod
+    def expected_signature(cls) -> bytes:
+        return b'PAR 2.0\x00Creator\x00'
 
     def __init__(self, client: str = "", set_id: bytes = b''):
         data = client.encode()
@@ -225,7 +224,7 @@ class CreatorPacket(Packet):
         if padding == 4:
             padding = 0
         data += b'\0' * padding
-        super().__init__(packet_type="Creator", set_id=set_id, data=data)
+        super().__init__(self.expected_signature(), set_id=set_id, data=data)
 
     def __repr__(self):
         return "<Par2 Creator Packet: \"{}\" ({} bytes)>".format(self.client, self.__len__())
@@ -234,21 +233,14 @@ class CreatorPacket(Packet):
         return self.client
 
     @classmethod
-    def from_bytes(cls, data: Union[bytes, memoryview]) -> _expected_type:
+    def from_bytes(cls, data: Union[bytes, memoryview]) -> "CreatorPacket":
         # Use parent for parsing
         parent = super().from_bytes(data)
-        if parent.header.type != cls._expected_type:
-            raise ValueError("Packet is actually a {} Packet, not a {} Packet"
-                             .format(parent.header.type, cls._expected_type))
         # Convert to the real class by copying
         packet = cls()
         packet._header = parent._header
         packet._data_after_header = parent._data_after_header
         return packet
-
-    def is_valid(self) -> bool:
-        """ A more strict validity check """
-        return super().is_valid() and self.header.type == self._expected_type
 
     @property
     def client(self) -> str:
@@ -257,25 +249,24 @@ class CreatorPacket(Packet):
 
 
 class FileDescriptionPacket(Packet):
+    # Number of files used to create the ".par2" file per recovery set
+    # size: 16 + 16 + 16 + variable
+
     _format = "<" + MD5_FORMAT + MD5_FORMAT + MD5_FORMAT + "Q"  # + Variable length data
-    _expected_type = "FileDescription"
 
     @classmethod
-    def from_bytes(cls, data: Union[bytes, memoryview]) -> _expected_type:
+    def expected_signature(cls) -> bytes:
+        return b'PAR 2.0\x00FileDesc'
+
+    @classmethod
+    def from_bytes(cls, data: Union[bytes, memoryview]) -> "FileDescriptionPacket":
         # Use parent for parsing
         parent = super().from_bytes(data)
-        if parent.header.type != cls._expected_type:
-            raise ValueError("Packet is actually a {} Packet, not a {} Packet"
-                             .format(parent.header.type, cls._expected_type))
         # Convert to the real class by copying
         packet = cls()
         packet._header = parent._header
         packet._data_after_header = parent._data_after_header
         return packet
-
-    def is_valid(self) -> bool:
-        """ A more strict validity check """
-        return super().is_valid() and self.header.type == self._expected_type
 
     @property
     def _raw_struct(self) -> tuple:
@@ -304,18 +295,62 @@ class FileDescriptionPacket(Packet):
         return bytes(self._data_after_header[offset:]).rstrip(b'\0').decode()
 
 
+class FileVerificationPacket(Packet):
+    # Number of files used to create the ".par2" file per recovery set
+    # size: variable
+
+    _format = "<"  # + Variable length data
+
+    @classmethod
+    def expected_signature(cls) -> bytes:
+        return b'PAR 2.0\x00IFSC\x00\x00\x00\x00'
+
+    @classmethod
+    def from_bytes(cls, data: Union[bytes, memoryview]) -> "FileVerificationPacket":
+        # Use parent for parsing
+        parent = super().from_bytes(data)
+        # Convert to the real class by copying
+        packet = cls()
+        packet._header = parent._header
+        packet._data_after_header = parent._data_after_header
+        return packet
+
+
+class RecoveryPacket(Packet):
+    # Number: variable
+    # size: variable
+    # size: header + 4 + Main.blocksize (Fixed at file creation)
+
+    _format = "<"  # + Variable length data
+
+    @classmethod
+    def expected_signature(cls) -> bytes:
+        return b'PAR 2.0\x00RecvSlic'
+
+    @classmethod
+    def from_bytes(cls, data: Union[bytes, memoryview]) -> "RecoveryPacket":
+        # Use parent for parsing
+        parent = super().from_bytes(data)
+        # Convert to the real class by copying
+        packet = cls()
+        packet._header = parent._header
+        packet._data_after_header = parent._data_after_header
+        return packet
+
+
+# Since signatures are stored in the class, this is useful
+KNOWN_PACKETS = [MainPacket, CreatorPacket, FileDescriptionPacket, FileVerificationPacket, RecoveryPacket]
+
+
 def packet_factory(data: Union[bytes, memoryview]):
     """
     Convert data into a par 2 packet
     :param data: The data to convert
-    :return: A Packet or child of a packet
+    :return: A Packet of the appropriate type or Packet if the type is not known
     """
     # Accept the overhead of decoding the header twice. It's not worth the trouble.
     header = PacketHeader.from_bytes(data)
-    if header.type == "Main":
-        return MainPacket.from_bytes(data)
-    if header.type == "Creator":
-        return CreatorPacket.from_bytes(data)
-    if header.type == "FileDescription":
-        return FileDescriptionPacket.from_bytes(data)
+    for packet_class in KNOWN_PACKETS:
+        if header.signature == packet_class.expected_signature():
+            return packet_class.from_bytes(data)
     return Packet.from_bytes(data)

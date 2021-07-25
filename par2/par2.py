@@ -3,6 +3,7 @@ __copyright__ = "Copyright (C) 2021 Arthur Moore"
 __license__ = "MIT"
 
 from collections.abc import Set
+from itertools import chain
 from logging import getLogger
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Iterator, Union, List
@@ -25,6 +26,8 @@ class RecoverySet(Set):
             return True
         if item == self._creator_packet:
             return True
+        if item in self._file_description_packets:
+            return True
         if item in self._packets:
             return True
         if item.header in self._packet_pointers.keys():
@@ -35,11 +38,14 @@ class RecoverySet(Set):
         self._set_id = set_id
         self._main_packet: Optional[packets.MainPacket] = None
         self._creator_packet: Optional[packets.CreatorPacket] = None
+        self._file_description_packets: Set[packets.FileDescriptionPacket] = set()
+        self._file_verification_packets: Set[packets.FileVerificationPacket] = set()
         self._packets: Set[packets.Packet] = set()
         self._packet_pointers: Dict[packets.PacketHeader: Tuple[Par2FileReader, int]] = dict()
 
     def __len__(self) -> int:
-        size = len(self._packets) + len(self._packet_pointers)
+        size = len(self._file_description_packets) + len(self._file_verification_packets)\
+               + len(self._packets) + len(self._packet_pointers)
         if self._main_packet is not None:
             size += 1
         if self._creator_packet is not None:
@@ -47,7 +53,15 @@ class RecoverySet(Set):
         return size
 
     def __iter__(self) -> Iterator[packets.Packet]:
-        return self.get_packets()
+        if self._main_packet is not None:
+            yield self._main_packet
+        if self._creator_packet is not None:
+            yield self._creator_packet
+        for packet in chain(self.file_description_packets,
+                            self.file_verification_packets,
+                            self.recovery_packets,
+                            self.unknown_packets):
+            yield packet
 
     def _validate_header(self, header: packets.PacketHeader):
         """ Make sure the packet header has a matching set_id """
@@ -69,14 +83,19 @@ class RecoverySet(Set):
             if self._main_packet == packet:
                 return
             raise ValueError("Can not add another (different) \"Main\" packet.")
-        if isinstance(packet, packets.CreatorPacket):
+        elif isinstance(packet, packets.CreatorPacket):
             if self._creator_packet is None:
                 self._creator_packet = packet
                 return
             if self._creator_packet == packet:
                 return
             raise ValueError("Can not add another (different) \"Creator\" packet.")
-        self._packets.add(packet)
+        elif isinstance(packet, packets.FileDescriptionPacket):
+            self._file_description_packets.add(packet)
+        elif isinstance(packet, packets.FileVerificationPacket):
+            self._file_verification_packets.add(packet)
+        else:
+            self._packets.add(packet)
 
     def _add_pointer(self, header: packets.PacketHeader, file: Par2FileReader, packet_number: int):
         """
@@ -87,9 +106,14 @@ class RecoverySet(Set):
         This function may decide to create a complete copy of any packet at any time!
         """
         self._validate_header(header)
-        packet_type = header.type
-        if packet_type in ["Main", "Creator", "FileDescription", "FileVerification"]:
-            self.add(file[packet_number])
+        important_packet_signatures = [
+            packets.MainPacket.expected_signature(),
+            packets.CreatorPacket.expected_signature(),
+            packets.FileDescriptionPacket.expected_signature(),
+            packets.FileVerificationPacket.expected_signature(),
+        ]
+        if header.signature in important_packet_signatures:
+            return self.add(file[packet_number])
         if header in self._packet_pointers.keys():
             return  # Don't bother with duplicates
         self._packet_pointers[header] = (file, packet_number)
@@ -108,28 +132,35 @@ class RecoverySet(Set):
             raise ValueError("Packet not found")
         return self._creator_packet
 
-    def get_packets(self, packet_type: str = None) -> Iterator[packets.Packet]:
-        """ Get all the packets of a particular type """
-        if packet_type == "Main":
-            yield self.main_packet
-            return
-        if packet_type == "Creator":
-            yield self.creator_packet
-            return
-        # Normal packets
+    @property
+    def file_description_packets(self) -> Iterator[packets.FileDescriptionPacket]:
+        for packet in self._file_description_packets:
+            yield packet
+
+    @property
+    def file_verification_packets(self) -> Iterator[packets.FileVerificationPacket]:
+        for packet in self._file_verification_packets:
+            yield packet
+
+    @property
+    def recovery_packets(self) -> Iterator[packets.FileVerificationPacket]:
         for packet in self._packets:
-            if packet_type is None:
+            if isinstance(packet, packets.RecoveryPacket):
                 yield packet
-            else:
-                if packet.header.type == packet_type:
-                    yield packet
         # Deal with pointers
         for header, (file, packet_number) in self._packet_pointers:
-            if packet_type is None:
+            if header.signature == packets.RecoveryPacket.expected_signature():
                 yield file[packet_number]
-            else:
-                if header.type == packet_type:
-                    yield file[packet_number]
+
+    @property
+    def unknown_packets(self) -> Iterator[packets.Packet]:
+        for packet in self._packets:
+            if not isinstance(packet, packets.RecoveryPacket):
+                yield packet
+        # Deal with pointers
+        for header, (file, packet_number) in self._packet_pointers:
+            if header.signature != packets.RecoveryPacket.expected_signature():
+                yield file[packet_number]
 
 
 class Par2:
@@ -162,18 +193,13 @@ class Par2:
         WARNING: This may result in multiple large packets in memory until the garbage collector runs
         """
         start_count = len(self)
-        small_packet_types = ["Main", "Creator", "FileDescription", "FileVerification"]
         for i, packet in enumerate(reader):
             set_id = packet.header.set_id
             if packet.header.set_id not in self.recovery_sets.keys():
                 # Create a RecoverySet if needed
                 self.recovery_sets[set_id] = RecoverySet(set_id)
 
-            if packet.header.type in small_packet_types:
-                # Save the entirety of the small packets
-                self.recovery_sets[set_id].add(packet)
-            else:
-                # Just save the packet number
-                # pylint: disable=protected-access
-                self.recovery_sets[set_id]._add_pointer(packet.header, reader, i)
+            # Save the packet number (let the recovery set deal with details)
+            # pylint: disable=protected-access
+            self.recovery_sets[set_id]._add_pointer(packet.header, reader, i)
         logger.info("Added {} new packets".format(len(self) - start_count))
