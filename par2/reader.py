@@ -17,6 +17,16 @@ from .packets import PacketHeader, packet_factory, PACKET_HEADER_SIZE
 class Par2FileReader(Sequence):
     """
     Provides a low level interface for reading Par2 files.
+
+    This scrubs through the entire file searching for packets on first access, but not until.
+    It strives for memory efficiency, and only saves the offset to each packet in the file.
+
+    Large files may see small lag on first scan, but memory usage will stay low, even on huge files.
+
+    If possible, files are memory mapped and where relevant the returned packets just contain views into that file.
+    This means that massive files can be read in their entirety, with a minimal memory footprint.
+    However, closing those files manually (or allowing the parent reader to be deleted)
+    will invalidate the pointers in those packets!
     """
 
     def __init__(self, in_file: Union[str, Path, bytes, memoryview, mmap.mmap, BinaryIO]):
