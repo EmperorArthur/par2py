@@ -26,7 +26,7 @@ setup(
     scripts=[],
     include_package_data=True,
     zip_safe=True,
-    test_suite="test",
+    test_suite="tests",
     install_requires=[
         # -*- Extra requirements: -*-
     ],

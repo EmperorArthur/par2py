@@ -3,11 +3,12 @@ __copyright__ = "Copyright (C) 2021 Arthur Moore"
 __license__ = "MIT"
 
 import mmap
-from collections import Sequence
+from collections.abc import Sequence
 from functools import partial
-from io import BufferedIOBase, UnsupportedOperation
+from io import UnsupportedOperation
+from math import ceil
 from pathlib import Path
-from typing import List, Union
+from typing import List, Union, BinaryIO
 
 from .packets import PacketHeader, packet_factory, PACKET_HEADER_SIZE
 
@@ -17,7 +18,7 @@ class Par2FileReader(Sequence):
     Provides a low level interface for reading Par2 files.
     """
 
-    def __init__(self, in_file: Union[str, Path, bytes, memoryview, mmap.mmap, BufferedIOBase]):
+    def __init__(self, in_file: Union[str, Path, bytes, memoryview, mmap.mmap, BinaryIO]):
         """
         Create an instance pointing to a particular piece of data.
 
@@ -68,24 +69,32 @@ class Par2FileReader(Sequence):
         self._packet_offsets = list()
         offset = self._offset
         if self._read_buffer is not None:
+            if isinstance(self._read_buffer, mmap.mmap) and self._read_buffer.closed:
+                # Handle this being closed for some reason (error or otherwise)
+                self._read_buffer = None
+                self._get_packet_header_offsets()
+                return
             while True:
                 packet_start = self._read_buffer[offset:].find(PacketHeader._magic_expected)
                 if packet_start < 0:
                     break
                 offset += packet_start
                 self._packet_offsets.append(offset)
+                offset += PACKET_HEADER_SIZE  # Advance to after the found result
             return
         if self._readable_and_seekable:
-            read_size = len(PacketHeader._magic_expected)  # Size of file reads (half the buffer size)
+            # Sized so the header can't be missed, but duplicates can't occur
+            buffer_size = int(2 * len(PacketHeader._magic_expected) - 1)  # Should always be odd
+            read_size = ceil(buffer_size/2)  # Size of file reads (just over half buffer size)
             self.fileobj.seek(offset)
-            buffer: bytes = self.fileobj.read(read_size)
-            offset += read_size
+            buffer: bytes = self.fileobj.read(buffer_size-read_size)  # Pre-fill half (ish) the buffer
             for half_buffer in iter(partial(self.fileobj.read, read_size), b''):
-                offset += read_size
                 buffer += half_buffer
                 packet_start = buffer.find(PacketHeader._magic_expected)
                 if packet_start >= 0:
+                    # Found and not a duplicate (buffer size just makes that possible)
                     self._packet_offsets.append(offset + packet_start)
+                offset += read_size  # Advance the offset
                 buffer = buffer[read_size:]  # Last thing is to remove old data from the buffer
             self.fileobj.seek(self._offset)
             return

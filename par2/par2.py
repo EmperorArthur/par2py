@@ -2,7 +2,7 @@ __author__ = "Arthur Moore <Arthur.Moore.git@cd-net.net>"
 __copyright__ = "Copyright (C) 2021 Arthur Moore"
 __license__ = "MIT"
 
-from collections import Set
+from collections.abc import Set
 from logging import getLogger
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Iterator, Union, List

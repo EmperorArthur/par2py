@@ -3,7 +3,7 @@ __copyright__ = "Copyright (C) 2021 Arthur Moore"
 __license__ = "MIT"
 
 import struct
-from collections import Sized, Hashable
+from collections.abc import Sized, Hashable
 from hashlib import md5
 from typing import NamedTuple, SupportsBytes, Union, Tuple
 
@@ -76,7 +76,7 @@ class PacketHeader(NamedTuple):
         return PACKET_LOOKUP.get(self.signature, "Unknown")
 
 
-class Packet(Sized, Hashable, SupportsBytes):
+class Packet(Sized, Hashable):  # SupportsBytes
     """
     A Par2 Packet
     WARNING: Watch out for memory limitations with large data / many packets
