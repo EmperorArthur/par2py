@@ -163,12 +163,20 @@ class RecoverySetPackets(MutableSet):
         return self._creator_packet
 
     @property
-    def file_description(self) -> Iterator[packets.FileDescriptionPacket]:
-        return filter(lambda p: isinstance(p, packets.FileDescriptionPacket), self._packets)
+    def file_description(self) -> Dict[bytes, packets.FileDescriptionPacket]:
+        out = dict()
+        packet: packets.FileDescriptionPacket
+        for packet in filter(lambda p: isinstance(p, packets.FileDescriptionPacket), self._packets):
+            out[packet.id] = packet
+        return out
 
     @property
-    def file_verification(self) -> Iterator[packets.FileVerificationPacket]:
-        return filter(lambda p: isinstance(p, packets.FileVerificationPacket), self._packets)
+    def file_verification(self) -> Dict[bytes, packets.FileVerificationPacket]:
+        out = dict()
+        packet: packets.FileVerificationPacket
+        for packet in filter(lambda p: isinstance(p, packets.FileVerificationPacket), self._packets):
+            out[packet.id] = packet
+        return out
 
     @property
     def recovery(self) -> Iterator[packets.RecoveryPacket]:
@@ -200,7 +208,7 @@ class RecoverySet:
     @property
     def files(self) -> List[str]:
         """ The file names/paths this set can recover """
-        return [packet.name for packet in self.packets.file_description]
+        return [packet.name for packet in self.packets.file_description.values()]
 
 
 class Par2:
