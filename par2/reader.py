@@ -11,7 +11,7 @@ from math import ceil
 from pathlib import Path
 from typing import List, Union, BinaryIO
 
-from .packets import PacketHeader, packet_factory, PACKET_HEADER_SIZE
+from .packets import PacketHeader, Packet, packet_factory, PACKET_HEADER_SIZE
 
 
 class Par2FileReader(Sequence):
@@ -117,7 +117,7 @@ class Par2FileReader(Sequence):
             self._get_packet_header_offsets()
         return len(self._packet_offsets)
 
-    def __getitem__(self, key: int):
+    def __getitem__(self, key: int) -> Packet:
         """ Get a packet from the file (by number) """
         if key >= len(self):
             # Side effect of populating self._packet_offsets if needed

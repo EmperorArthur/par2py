@@ -339,7 +339,7 @@ class RecoveryPacket(Packet):
 
 
 # Since signatures are stored in the class, this is useful
-KNOWN_PACKETS = [MainPacket, CreatorPacket, FileDescriptionPacket, FileVerificationPacket, RecoveryPacket]
+KNOWN_PACKETS = tuple([MainPacket, CreatorPacket, FileDescriptionPacket, FileVerificationPacket, RecoveryPacket])
 
 
 def packet_factory(data: Union[bytes, memoryview]):
