@@ -3,7 +3,7 @@ from pathlib import Path
 
 from par2.reader import Par2FileReader
 
-from .helpers import change_test_dir
+from .conftest import in_sample_dir, SAMPLES_PATH
 
 
 def test_reader_empty_bytes():
@@ -12,7 +12,7 @@ def test_reader_empty_bytes():
     assert len(reader) == 0
 
 
-def test_reader_par2_file_str(change_test_dir):
+def test_reader_par2_file_str(in_sample_dir):
     reader = Par2FileReader("testfile.txt.par2")
     assert isinstance(reader._read_buffer, mmap.mmap), "File should be memmapped"
     assert reader._packet_offsets == [], "File should not be parsed immediately"
@@ -21,7 +21,7 @@ def test_reader_par2_file_str(change_test_dir):
     assert reader._packet_offsets == [0, 92, 224, 724], "Offsets should always be here"
 
 
-def test_reader_par2_file_str_mmap_closed(change_test_dir):
+def test_reader_par2_file_str_mmap_closed(in_sample_dir):
     """ Similar to above, but this time simulating a mmap being closed """
     reader = Par2FileReader("testfile.txt.par2")
     assert isinstance(reader._read_buffer, mmap.mmap), "File should be memmapped"
@@ -30,12 +30,12 @@ def test_reader_par2_file_str_mmap_closed(change_test_dir):
     assert reader._packet_offsets == [0, 92, 224, 724], "Offsets should always be here"
 
 
-def test_reader_par2_file_path(change_test_dir):
+def test_reader_par2_file_path(in_sample_dir):
     """ Similar to above, but just checking input type """
-    reader = Par2FileReader(Path("testfile.txt.par2"))
+    reader = Par2FileReader(SAMPLES_PATH.joinpath("testfile.txt.par2"))
 
 
-def test_reader_par2_open_file(change_test_dir):
+def test_reader_par2_open_file(in_sample_dir):
     """ Similar to above, but just checking input type """
     file = Path("testfile.txt.par2").open('rb')
     reader = Par2FileReader(file)
