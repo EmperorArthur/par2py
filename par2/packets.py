@@ -5,7 +5,7 @@ __license__ = "MIT"
 import struct
 from collections.abc import Sized, Hashable
 from hashlib import md5
-from typing import NamedTuple, SupportsBytes, Union, Tuple
+from typing import NamedTuple, SupportsBytes, Union, Tuple, Set, Iterable, Dict, Any
 
 MD5_FORMAT = "16s"
 
@@ -343,8 +343,7 @@ class RecoveryPacket(Packet):
     # Number: variable
     # size: variable
     # size: header + 4 + Main.blocksize (Fixed at file creation)
-
-    _format = "<"  # + Variable length data
+    _single_format = "<" + "I"  # + Variable length data
 
     @classmethod
     def expected_signature(cls) -> bytes:
@@ -377,3 +376,19 @@ def packet_factory(data: Union[bytes, memoryview]):
         if header.signature == packet_class.expected_signature():
             return packet_class.from_bytes(data)
     return Packet.from_bytes(data)
+
+
+def by_set_id(packets: Iterable[Union[Packet, Any]]) -> Dict[bytes, Set[Union[Packet, Any]]]:
+    """
+    Sort packets by set_id
+    Or anything where `isinstance(item.header, PacketHeader) == True`
+    :return A dict of {set_id: set(packets)}
+    """
+    processed = {(packet.header.set_id, packet) for packet in packets}
+    out = dict()
+    # use two iterations to avoid an if statement on every iteration
+    for set_id, packet in processed:
+        out[set_id] = set()
+    for set_id, packet in processed:
+        out[set_id].add(packet)
+    return out

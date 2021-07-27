@@ -9,9 +9,38 @@ from functools import partial
 from io import UnsupportedOperation
 from math import ceil
 from pathlib import Path
-from typing import List, Union, BinaryIO
+from typing import List, Union, BinaryIO, Set
 
 from .packets import PacketHeader, Packet, packet_factory, PACKET_HEADER_SIZE
+
+
+class DDPacketPointer:
+    """
+    A de-duplicating pointer to a packet within a Par2FileReader instance.
+
+    This is an optimization for larger packets, so they don't have to be read into RAM.
+
+    WARNING: Two pointers are considered identical if they have the same header.
+    If placed into a `set`, only one will be stored.
+    This is what makes them de-duplicating.
+    """
+    def __init__(self, header: PacketHeader, reader: "Par2FileReader", index: int):
+        self._header = header
+        self._reader = reader
+        self._index = index
+
+    @property
+    def header(self):
+        return self._header
+
+    def get(self) -> Packet:
+        return self._reader[self._index]
+
+    def __hash__(self):
+        return hash(self._header) ^ hash(self.__class__.__name__)
+
+    def __eq__(self, other):
+        return isinstance(other, DDPacketPointer) and self.header == other.header
 
 
 class Par2FileReader(Sequence):
@@ -132,3 +161,25 @@ class Par2FileReader(Sequence):
             buffer += self.fileobj.read(header.length - PACKET_HEADER_SIZE)
             self.fileobj.seek(self._offset)
             return packet_factory(buffer)
+
+    def get_pointers(self) -> Set[DDPacketPointer]:
+        """
+        Get pointers to all the packets in the file.
+        This is de-duplicated, but does require that every header in the file be read and stored.
+        """
+        if not self._packet_offsets:
+            # Make sure offsets are known
+            self._get_packet_header_offsets()
+        pointers: Set[DDPacketPointer] = set()
+        if self._read_buffer is not None:
+            for i, offset in enumerate(self._packet_offsets):
+                header = PacketHeader.from_bytes(self._read_buffer[offset:])
+                pointers.add(DDPacketPointer(header, self, i))
+        elif self._readable_and_seekable:
+            for i, offset in enumerate(self._packet_offsets):
+                self.fileobj.seek(offset)
+                buffer: bytes = self.fileobj.read(PACKET_HEADER_SIZE)
+                header = PacketHeader.from_bytes(buffer)
+                pointers.add(DDPacketPointer(header, self, i))
+            self.fileobj.seek(self._offset)
+        return pointers  # Guaranteed not to raise, thanks to `self._get_packet_header_offsets()` already doing so

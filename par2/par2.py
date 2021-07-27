@@ -8,36 +8,11 @@ from pathlib import Path
 from typing import Optional, Dict, Iterator, Union, List, Set
 
 from . import packets
-from .reader import Par2FileReader
+from .reader import Par2FileReader, DDPacketPointer
 
 logger = getLogger()
 
 
-class PacketPointer:
-    """
-    A pointer to a packet within a Par2FileReader instance.
-
-    This is an optimization for larger packets, so they don't have to be read into RAM.
-
-    WARNING: The provided hash function could lead to issues if a pointer is stored in the same location as real packets
-    """
-    def __init__(self, header: packets.PacketHeader, reader: Par2FileReader, index: int):
-        self._header = header
-        self._reader = reader
-        self._index = index
-
-    @property
-    def header(self):
-        return self._header
-
-    def get(self) -> packets.Packet:
-        return self._reader[self._index]
-
-    def __hash__(self):
-        return self._header.__hash__()
-
-    def __eq__(self, other):
-        return isinstance(other, PacketPointer) and self.header == other.header
 
 
 class RecoverySetPackets(MutableSet):
@@ -109,7 +84,7 @@ class RecoverySetPackets(MutableSet):
                 break
         self._packets.add(packet)
 
-    def _add_pointer(self, pointer: PacketPointer):
+    def _add_pointer(self, pointer: DDPacketPointer):
         """Use this for large packets like "RecoveryBlock". """
         self._validate_header(pointer.header)
         for packet in self._packets:
@@ -118,7 +93,7 @@ class RecoverySetPackets(MutableSet):
                 return
         self._packet_pointers.add(pointer)
 
-    def add(self, element: Union[packets.Packet, PacketPointer]):
+    def add(self, element: Union[packets.Packet, DDPacketPointer]):
         """
         Add a packet or pointer to a packet.
         NOTE: This function will convert some pointers into packets!
@@ -131,14 +106,14 @@ class RecoverySetPackets(MutableSet):
         ]
         if isinstance(element, packets.Packet):
             return self._add_packet(element)
-        if not isinstance(element, PacketPointer):
+        if not isinstance(element, DDPacketPointer):
             raise ValueError("Only packets.Packet and PacketPointer are allowed here!")
         if element.header.signature in important_packet_signatures:
             return self._add_packet(element.get())
         return self._add_pointer(element)
 
-    def discard(self, element: Union[packets.Packet, PacketPointer]) -> None:
-        if isinstance(element, PacketPointer):
+    def discard(self, element: Union[packets.Packet, DDPacketPointer]) -> None:
+        if isinstance(element, DDPacketPointer):
             element = element.get()
         if not isinstance(element, packets.Packet):
             return
@@ -237,17 +212,15 @@ class Par2:
     def _read_packets(self, reader: Par2FileReader):
         """
         Read all the small packets that are in the file, also store the offsets and set information of larger packets.
-
-        WARNING: This may result in multiple large packets in memory until the garbage collector runs
         """
         start_count = len(self)
-        for i, packet in enumerate(reader):
-            set_id = packet.header.set_id
-            if packet.header.set_id not in self.recovery_sets.keys():
+        pointers = reader.get_pointers()
+        # Create RecoverySets if needed
+        for set_id, pointer_set in packets.by_set_id(pointers).items():
+            print(set_id.hex(), pointer_set)
+            if set_id not in self.recovery_sets.keys():
                 # Create a RecoverySet if needed
                 self.recovery_sets[set_id] = RecoverySet(set_id)
-
-            # Save the packet number (let the recovery set deal with details)
-            # pylint: disable=protected-access
-            self.recovery_sets[set_id].packets.add(PacketPointer(packet.header, reader, i))
+            for pointer in pointer_set:
+                self.recovery_sets[set_id].packets.add(pointer)
         logger.info("Added {} new packets".format(len(self) - start_count))
